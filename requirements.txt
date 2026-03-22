@@ -1,0 +1,71 @@
+# =============================================================================
+# CodeIntel Platform -- Python Requirements
+# =============================================================================
+
+# --- Web Framework ---
+fastapi>=0.111.0
+gunicorn>=22.0.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# --- LangGraph / LangChain ---
+langgraph>=0.1.0
+langchain-core>=0.2.0
+langchain-ollama>=0.1.0
+langchain-community>=0.2.0
+
+# --- LLM Clients (core: Ollama + llama.cpp via OpenAI-compatible API) ---
+openai>=1.30.0
+
+# --- LLM Clients (optional: install when switching provider) ---
+# pip install langchain-openai       # for llama.cpp LangGraph or Azure OpenAI
+# pip install boto3                   # for Amazon Bedrock
+# pip install langchain-aws           # for Bedrock LangGraph integration
+
+# --- Vector Database ---
+qdrant-client>=1.9.0
+
+# --- Embedding & Reranking ---
+sentence-transformers>=3.0.0
+torch>=2.3.0
+numpy>=1.26.0
+
+# --- Tree-sitter Parsing ---
+tree-sitter>=0.22.0
+# Language grammars -- install as needed:
+# tree-sitter-python
+# tree-sitter-javascript
+# tree-sitter-typescript
+# tree-sitter-go
+# tree-sitter-java
+# tree-sitter-c
+# tree-sitter-cpp
+# tree-sitter-c-sharp
+# tree-sitter-kotlin
+# tree-sitter-php
+# Or use the bundled package:
+tree-sitter-languages>=1.10.0
+
+# --- Async Tasks ---
+celery[redis]>=5.4.0
+redis>=5.0.0
+kombu>=5.3.0
+
+# --- GitLab Integration ---
+python-gitlab>=4.7.0
+
+# --- GitHub Integration ---
+PyGithub>=2.3.0
+
+# --- Utilities ---
+structlog>=24.1.0
+networkx>=3.3.0
+tqdm>=4.66.0
+python-multipart>=0.0.9
+
+# --- HTTP Client (for benchmarks & latency profiling) ---
+httpx>=0.27.0
+
+# --- Optional: ONNX acceleration for CPU embeddings ---
+# optimum[onnxruntime]>=1.20.0

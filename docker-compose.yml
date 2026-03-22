@@ -1,0 +1,359 @@
+version: "3.9"
+
+# =============================================================================
+# CodeIntel Platform — Docker Compose
+# =============================================================================
+# Services:
+#   ingestion  — FastAPI webhook + index trigger server (port 8000)
+#   agent      — LangGraph ReAct agent API server (port 8001)
+#   docgen     — Celery doc-generation worker
+#   indexer    — Celery indexing worker
+#   ollama     — Ollama LLM server (CPU mode, port 11434)
+#   qdrant     — Qdrant vector database (port 6333)
+#   redis      — Redis for Celery broker + result backend (port 6379)
+#   frontend   — Next.js wiki + chat frontend (port 3000)
+# =============================================================================
+
+x-common-env: &common-env
+  env_file:
+    - .env
+
+x-python-base: &python-base
+  build:
+    context: .
+    dockerfile: Dockerfile.python
+  env_file:
+    - .env
+  depends_on:
+    qdrant:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  volumes:
+    - repos_data:/data/repos
+    - index_data:/data/indexes
+    - model_data:/data/models
+    - sources_data:/data/sources
+  restart: unless-stopped
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — Vector Database
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    container_name: codeintel-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      QDRANT__LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — Celery Broker + Result Backend
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: codeintel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ollama — Local LLM Server (CPU mode)
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: codeintel-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 1
+      # CPU-only mode; no GPU device
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ingestion Service — FastAPI webhook + index trigger
+  # ---------------------------------------------------------------------------
+  ingestion:
+    <<: *python-base
+    container_name: codeintel-ingestion
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      args:
+        SERVICE: ingestion
+    ports:
+      - "8000:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # SCM provider selection: "gitlab" (default) or "github"
+      SCM_PROVIDER: ${SCM_PROVIDER:-gitlab}
+      # GitHub settings (only needed when SCM_PROVIDER=github)
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_URL: ${GITHUB_URL:-https://github.com}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+    command: >
+      gunicorn services.ingestion.main:app
+      --worker-class uvicorn.workers.UvicornWorker
+      --workers ${WORKERS:-4}
+      --bind ${HOST:-0.0.0.0}:${PORT:-8000}
+      --timeout 120
+      --log-level ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Agent Service — LangGraph ReAct agent API
+  # ---------------------------------------------------------------------------
+  agent:
+    <<: *python-base
+    container_name: codeintel-agent
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      args:
+        SERVICE: agent
+    ports:
+      - "8001:8001"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    command: >
+      gunicorn services.agent.api:app
+      --worker-class uvicorn.workers.UvicornWorker
+      --workers 2
+      --bind ${HOST:-0.0.0.0}:${AGENT_PORT:-8001}
+      --timeout 300
+      --log-level ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Indexer Worker — Celery worker for indexing tasks
+  # ---------------------------------------------------------------------------
+  indexer:
+    <<: *python-base
+    container_name: codeintel-indexer
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      args:
+        SERVICE: indexer
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A services.docgen.tasks worker
+      --queues=indexing
+      --concurrency=2
+      --loglevel=${LOG_LEVEL:-info}
+      --hostname=indexer@%h
+
+  # ---------------------------------------------------------------------------
+  # DocGen Worker — Celery worker for documentation generation tasks
+  # ---------------------------------------------------------------------------
+  docgen:
+    <<: *python-base
+    container_name: codeintel-docgen
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      args:
+        SERVICE: docgen
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    command: >
+      celery -A services.docgen.tasks worker
+      --queues=docgen
+      --concurrency=1
+      --loglevel=${LOG_LEVEL:-info}
+      --hostname=docgen@%h
+
+  # ---------------------------------------------------------------------------
+  # Celery Beat — Scheduled tasks (e.g., periodic static doc refresh)
+  # ---------------------------------------------------------------------------
+  celery-beat:
+    <<: *python-base
+    container_name: codeintel-celery-beat
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A services.docgen.tasks beat
+      --loglevel=${LOG_LEVEL:-info}
+      --schedule=/data/indexes/celerybeat-schedule
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js wiki + chat interface
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: codeintel-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_AGENT_API_URL: http://agent:8001
+      NEXT_PUBLIC_APP_NAME: CodeIntel
+    depends_on:
+      agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Benchmarks — on-demand quality & performance evaluation
+  # ---------------------------------------------------------------------------
+  # Run with: docker compose run --rm benchmarks run --suite all
+  # ---------------------------------------------------------------------------
+  benchmarks:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: codeintel-benchmarks
+    working_dir: /app
+    entrypoint: ["python", "-m", "benchmarks.cli"]
+    command: ["run", "--suite", "all", "--check-thresholds"]
+    environment:
+      BENCH_AGENT_API_URL: http://agent:8001
+      BENCH_QDRANT_URL: http://qdrant:6333
+      BENCH_WIKI_DOCS_DIR: /data/indexes/wiki
+      BENCH_OUTPUT_DIR: /data/benchmarks/results
+      BENCH_DATA_DIR: /app/benchmarks/data
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - index_data:/data/indexes
+      - model_data:/data/models
+      - repos_data:/data/repos
+      - benchmark_data:/data/benchmarks
+    depends_on:
+      agent:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    profiles:
+      - benchmark
+    restart: "no"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  qdrant_storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/qdrant
+
+  redis_data:
+    driver: local
+
+  ollama_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/models/ollama
+
+  repos_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/repos
+
+  index_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/indexes
+
+  model_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/models
+
+  sources_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/sources
+
+  benchmark_data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  default:
+    name: codeintel-network
+    driver: bridge

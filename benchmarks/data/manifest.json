@@ -1,0 +1,158 @@
+{
+  "retrieval_cases": [
+    {
+      "query_id": "ret-001",
+      "query": "webhook handler for GitLab push events",
+      "project_id": "",
+      "expected_files": ["gitlab_client.py", "main.py"],
+      "expected_symbols": ["handle_push_event", "process_webhook"],
+      "expected_collection": "code_repo",
+      "tags": ["ingestion", "webhook"]
+    },
+    {
+      "query_id": "ret-002",
+      "query": "How are code embeddings generated and cached?",
+      "project_id": "",
+      "expected_files": ["embedder.py"],
+      "expected_symbols": ["embed_texts", "CodeEmbedder"],
+      "expected_collection": "code_repo",
+      "tags": ["indexing", "embedding"]
+    },
+    {
+      "query_id": "ret-003",
+      "query": "cross-encoder reranking implementation",
+      "project_id": "",
+      "expected_files": ["reranker.py"],
+      "expected_symbols": ["rerank", "CrossEncoderReranker"],
+      "expected_collection": "code_repo",
+      "tags": ["agent", "reranking"]
+    },
+    {
+      "query_id": "ret-004",
+      "query": "Qdrant hybrid search with BM25",
+      "project_id": "",
+      "expected_files": ["qdrant_store.py"],
+      "expected_symbols": ["hybrid_search", "QdrantStore"],
+      "expected_collection": "code_repo",
+      "tags": ["indexing", "search"]
+    },
+    {
+      "query_id": "ret-005",
+      "query": "tree-sitter parser for Python functions",
+      "project_id": "",
+      "expected_files": ["parser.py"],
+      "expected_symbols": ["parse_file", "TreeSitterParser"],
+      "expected_collection": "code_repo",
+      "tags": ["parsing"]
+    },
+    {
+      "query_id": "ret-006",
+      "query": "Celery task for wiki document generation",
+      "project_id": "",
+      "expected_files": ["tasks.py"],
+      "expected_symbols": ["generate_wiki", "generate_wiki_incremental"],
+      "expected_collection": "code_repo",
+      "tags": ["docgen", "celery"]
+    },
+    {
+      "query_id": "ret-007",
+      "query": "LLM provider fallback chain configuration",
+      "project_id": "",
+      "expected_files": ["factory.py"],
+      "expected_symbols": ["FallbackProvider", "create_fallback_provider"],
+      "expected_collection": "code_repo",
+      "tags": ["llm", "provider"]
+    },
+    {
+      "query_id": "ret-008",
+      "query": "dependency graph topological sort with cycle detection",
+      "project_id": "",
+      "expected_files": ["dependency_graph.py"],
+      "expected_symbols": ["topological_sort", "build_dependency_graph"],
+      "expected_collection": "code_repo",
+      "tags": ["parsing", "graph"]
+    },
+    {
+      "query_id": "ret-009",
+      "query": "hierarchical wiki module clustering algorithm",
+      "project_id": "",
+      "expected_files": ["module_cluster.py", "wiki_generator.py"],
+      "expected_symbols": ["cluster_components", "WikiGenerator"],
+      "expected_collection": "code_repo",
+      "tags": ["docgen", "clustering"]
+    },
+    {
+      "query_id": "ret-010",
+      "query": "iterative document refinement with critique scoring",
+      "project_id": "",
+      "expected_files": ["doc_refiner.py"],
+      "expected_symbols": ["DocRefiner", "refine"],
+      "expected_collection": "code_repo",
+      "tags": ["docgen", "refiner"]
+    }
+  ],
+  "agent_cases": [
+    {
+      "query_id": "agent-001",
+      "query": "How does the ingestion webhook handler verify HMAC signatures?",
+      "project_id": "",
+      "must_contain": ["hmac", "signature"],
+      "must_not_contain": [],
+      "min_confidence": 0.3,
+      "expected_tool_calls": ["search_code"],
+      "max_latency_s": 0,
+      "tags": ["ingestion", "security"]
+    },
+    {
+      "query_id": "agent-002",
+      "query": "Explain how the cross-encoder reranker improves search results",
+      "project_id": "",
+      "must_contain": ["rerank", "cross-encoder"],
+      "must_not_contain": [],
+      "min_confidence": 0.3,
+      "expected_tool_calls": ["search_code"],
+      "max_latency_s": 0,
+      "tags": ["agent", "reranking"]
+    },
+    {
+      "query_id": "agent-003",
+      "query": "What collections does Qdrant use and what is stored in each?",
+      "project_id": "",
+      "must_contain": ["code_repo", "app_docs"],
+      "must_not_contain": [],
+      "min_confidence": 0.3,
+      "expected_tool_calls": ["search_code"],
+      "max_latency_s": 0,
+      "tags": ["indexing", "qdrant"]
+    },
+    {
+      "query_id": "agent-004",
+      "query": "How does the wiki generator handle module dependencies?",
+      "project_id": "",
+      "must_contain": ["topological", "dependency"],
+      "must_not_contain": [],
+      "min_confidence": 0.3,
+      "expected_tool_calls": ["search_code"],
+      "max_latency_s": 0,
+      "tags": ["docgen"]
+    },
+    {
+      "query_id": "agent-005",
+      "query": "What programming languages does the tree-sitter parser support?",
+      "project_id": "",
+      "must_contain": ["python", "javascript"],
+      "must_not_contain": ["error", "unsupported"],
+      "min_confidence": 0.3,
+      "expected_tool_calls": ["search_code"],
+      "max_latency_s": 0,
+      "tags": ["parsing"]
+    }
+  ],
+  "wiki_quality_cases": [
+    {
+      "project_id": "codeintel",
+      "module_name": "",
+      "min_overall": 3.5
+    }
+  ]
+}

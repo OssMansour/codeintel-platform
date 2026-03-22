@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+# Build arg for service-specific requirements
+ARG SERVICE=all
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY services/ ./services/
+COPY scripts/ ./scripts/
+
+# Create data directories
+RUN mkdir -p /data/repos /data/indexes/embed_cache /data/models/embed \
+             /data/models/reranker /data/sources /data/qdrant
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000 8001

@@ -1,0 +1,9 @@
+{
+  "name": "CodeIntel Wiki",
+  "short_name": "CodeIntel",
+  "description": "AI-generated code documentation browser",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6"
+}

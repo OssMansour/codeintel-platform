@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --border: #334155;
+  --accent: #3b82f6;
+}
+
+body {
+  @apply bg-[var(--bg-primary)] text-[var(--text-primary)] antialiased;
+}
+
+/* Markdown content styling */
+.prose-wiki h1 { @apply text-2xl font-bold mt-8 mb-4 text-white; }
+.prose-wiki h2 { @apply text-xl font-semibold mt-6 mb-3 text-slate-100; }
+.prose-wiki h3 { @apply text-lg font-semibold mt-5 mb-2 text-slate-200; }
+.prose-wiki p  { @apply mb-3 leading-relaxed text-slate-300; }
+.prose-wiki ul { @apply list-disc pl-6 mb-3 text-slate-300; }
+.prose-wiki ol { @apply list-decimal pl-6 mb-3 text-slate-300; }
+.prose-wiki li { @apply mb-1; }
+.prose-wiki a  { @apply text-blue-400 hover:text-blue-300 underline; }
+.prose-wiki blockquote { @apply border-l-4 border-blue-500 pl-4 italic text-slate-400 my-4; }
+.prose-wiki hr { @apply border-slate-600 my-6; }
+.prose-wiki table { @apply w-full border-collapse mb-4; }
+.prose-wiki th { @apply bg-slate-700 border border-slate-600 px-3 py-2 text-left font-semibold; }
+.prose-wiki td { @apply border border-slate-600 px-3 py-2; }
+
+/* Code blocks */
+.prose-wiki pre {
+  @apply bg-slate-800 rounded-lg p-4 mb-4 overflow-x-auto text-sm;
+}
+.prose-wiki code {
+  @apply bg-slate-700 px-1.5 py-0.5 rounded text-sm text-blue-300;
+}
+.prose-wiki pre code {
+  @apply bg-transparent px-0 py-0 text-slate-300;
+}
+
+/* Mermaid diagrams */
+.mermaid {
+  @apply bg-slate-800 rounded-lg p-4 mb-4 flex justify-center;
+}
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
