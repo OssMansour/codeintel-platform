@@ -197,6 +197,12 @@ services:
       --concurrency=2
       --loglevel=${LOG_LEVEL:-info}
       --hostname=indexer@%h
+    healthcheck:
+      test: ["CMD", "celery", "-A", "services.docgen.tasks", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   # ---------------------------------------------------------------------------
   # DocGen Worker — Celery worker for documentation generation tasks
@@ -251,7 +257,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_AGENT_API_URL: http://agent:8001
+      NEXT_PUBLIC_AGENT_API_URL: /api
+      AGENT_INTERNAL_URL: http://agent:8001
       NEXT_PUBLIC_APP_NAME: CodeIntel
     depends_on:
       agent:

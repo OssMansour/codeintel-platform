@@ -146,6 +146,17 @@
       "expected_tool_calls": ["search_code"],
       "max_latency_s": 0,
       "tags": ["parsing"]
+    },
+    {
+      "query_id": "agent-006",
+      "query": "What incidents caused payment service failures in the last 6 months?",
+      "project_id": "",
+      "must_contain": [],
+      "must_not_contain": ["Error", "Exception", "KeyError", "500"],
+      "min_confidence": 0.0,
+      "expected_tool_calls": ["search_incidents", "search_code"],
+      "max_latency_s": 0,
+      "tags": ["incident", "graceful_degradation"]
     }
   ],
   "wiki_quality_cases": [

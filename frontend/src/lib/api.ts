@@ -4,7 +4,7 @@
  * Typed client for the Agent API wiki endpoints + agent query.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_AGENT_API_URL || "http://localhost:8001";
+const API_BASE = process.env.NEXT_PUBLIC_AGENT_API_URL || "/api";
 
 // ---------------------------------------------------------------------------
 // Types

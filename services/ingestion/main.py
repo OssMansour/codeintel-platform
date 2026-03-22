@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-from services.docgen.tasks import index_changed_files, index_repository, index_static_docs
+from services.docgen.tasks import index_changed_files, index_mr_context, index_repository, index_static_docs
 from services.ingestion.scm_provider import SCMProvider
 
 # ---------------------------------------------------------------------------
@@ -128,12 +128,15 @@ def _verify_gitlab_signature(
         return True
 
     # HMAC-SHA256 verification (for advanced webhook configurations)
+    # GitLab sends the raw hex digest in X-Gitlab-Token — no "sha256=" prefix.
     expected = hmac.new(
         secret.encode("utf-8"),
         body,
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(signature, f"sha256={expected}")
+    # Strip "sha256=" prefix from incoming signature if present (defensive)
+    clean_sig = signature.removeprefix("sha256=")
+    return hmac.compare_digest(clean_sig, expected)
 
 
 async def _verify_and_parse_body(
@@ -450,9 +453,13 @@ async def _handle_gitlab_mr_event(payload: dict[str, Any]) -> WebhookResponse:
     """
     Handle GitLab Merge Request events.
 
-    Logs MR metadata. Future: index MR descriptions and comments as context.
+    Indexes MR descriptions and comments into app_docs for agent context.
     """
     mr = payload.get("object_attributes", {})
+    project_id = str(
+        payload.get("project", {}).get("path_with_namespace")
+        or payload.get("project_id", settings.gitlab_project_id)
+    )
     log.info(
         "gitlab_mr_event_received",
         mr_id=mr.get("iid"),
@@ -460,9 +467,25 @@ async def _handle_gitlab_mr_event(payload: dict[str, Any]) -> WebhookResponse:
         state=mr.get("state"),
         action=mr.get("action"),
     )
+
+    task = index_mr_context.apply_async(
+        kwargs={
+            "project_id": project_id,
+            "context_type": "merge_request",
+            "context_id": mr.get("iid", 0),
+            "title": mr.get("title", ""),
+            "body": mr.get("description", ""),
+            "state": mr.get("state", ""),
+            "author": mr.get("author", {}).get("username", "") if isinstance(mr.get("author"), dict) else str(mr.get("author_id", "")),
+            "url": mr.get("url", ""),
+        },
+        queue="indexing",
+    )
+
     return WebhookResponse(
-        status="logged",
-        message=f"MR #{mr.get('iid')} event logged",
+        status="accepted",
+        message=f"MR #{mr.get('iid')} dispatched for indexing",
+        task_id=task.id,
     )
 
 
@@ -470,9 +493,13 @@ async def _handle_gitlab_issue_event(payload: dict[str, Any]) -> WebhookResponse
     """
     Handle GitLab Issue events.
 
-    Logs issue metadata. Future: index issue descriptions as context.
+    Indexes issue descriptions into app_docs for agent context.
     """
     issue = payload.get("object_attributes", {})
+    project_id = str(
+        payload.get("project", {}).get("path_with_namespace")
+        or payload.get("project_id", settings.gitlab_project_id)
+    )
     log.info(
         "gitlab_issue_event_received",
         issue_id=issue.get("iid"),
@@ -480,9 +507,25 @@ async def _handle_gitlab_issue_event(payload: dict[str, Any]) -> WebhookResponse
         state=issue.get("state"),
         action=issue.get("action"),
     )
+
+    task = index_mr_context.apply_async(
+        kwargs={
+            "project_id": project_id,
+            "context_type": "issue",
+            "context_id": issue.get("iid", 0),
+            "title": issue.get("title", ""),
+            "body": issue.get("description", ""),
+            "state": issue.get("state", ""),
+            "author": issue.get("author", {}).get("username", "") if isinstance(issue.get("author"), dict) else str(issue.get("author_id", "")),
+            "url": issue.get("url", ""),
+        },
+        queue="indexing",
+    )
+
     return WebhookResponse(
-        status="logged",
-        message=f"Issue #{issue.get('iid')} event logged",
+        status="accepted",
+        message=f"Issue #{issue.get('iid')} dispatched for indexing",
+        task_id=task.id,
     )
 
 
@@ -501,10 +544,11 @@ async def _handle_github_pr_event(payload: dict[str, Any]) -> WebhookResponse:
     """
     Handle GitHub Pull Request events.
 
-    Logs PR metadata. Future: index PR descriptions and review comments.
+    Indexes PR descriptions and review comments into app_docs for agent context.
     """
     pr = payload.get("pull_request", {})
     action = payload.get("action", "unknown")
+    repo_full_name = payload.get("repository", {}).get("full_name", settings.github_repo)
     log.info(
         "github_pr_event_received",
         pr_number=pr.get("number"),
@@ -512,9 +556,25 @@ async def _handle_github_pr_event(payload: dict[str, Any]) -> WebhookResponse:
         state=pr.get("state"),
         action=action,
     )
+
+    task = index_mr_context.apply_async(
+        kwargs={
+            "project_id": repo_full_name,
+            "context_type": "pull_request",
+            "context_id": pr.get("number", 0),
+            "title": pr.get("title", ""),
+            "body": pr.get("body", "") or "",
+            "state": pr.get("state", ""),
+            "author": pr.get("user", {}).get("login", ""),
+            "url": pr.get("html_url", ""),
+        },
+        queue="indexing",
+    )
+
     return WebhookResponse(
-        status="logged",
-        message=f"PR #{pr.get('number')} event logged ({action})",
+        status="accepted",
+        message=f"PR #{pr.get('number')} dispatched for indexing ({action})",
+        task_id=task.id,
     )
 
 
@@ -522,10 +582,11 @@ async def _handle_github_issue_event(payload: dict[str, Any]) -> WebhookResponse
     """
     Handle GitHub Issue events.
 
-    Logs issue metadata. Future: index issue descriptions as context.
+    Indexes issue descriptions into app_docs for agent context.
     """
     issue = payload.get("issue", {})
     action = payload.get("action", "unknown")
+    repo_full_name = payload.get("repository", {}).get("full_name", settings.github_repo)
     log.info(
         "github_issue_event_received",
         issue_number=issue.get("number"),
@@ -533,9 +594,25 @@ async def _handle_github_issue_event(payload: dict[str, Any]) -> WebhookResponse
         state=issue.get("state"),
         action=action,
     )
+
+    task = index_mr_context.apply_async(
+        kwargs={
+            "project_id": repo_full_name,
+            "context_type": "issue",
+            "context_id": issue.get("number", 0),
+            "title": issue.get("title", ""),
+            "body": issue.get("body", "") or "",
+            "state": issue.get("state", ""),
+            "author": issue.get("user", {}).get("login", ""),
+            "url": issue.get("html_url", ""),
+        },
+        queue="indexing",
+    )
+
     return WebhookResponse(
-        status="logged",
-        message=f"Issue #{issue.get('number')} event logged ({action})",
+        status="accepted",
+        message=f"Issue #{issue.get('number')} dispatched for indexing ({action})",
+        task_id=task.id,
     )
 
 

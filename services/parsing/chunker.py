@@ -112,7 +112,6 @@ def chunk_file(
     repo_url: str = "",
     branch: str = "main",
     commit_sha: str = "HEAD",
-    gitlab_base_url: str = "",
     scm_provider: SCMProvider | str = SCMProvider.GITLAB,
     scm_base_url: str = "",
 ) -> list[Chunk]:
@@ -131,15 +130,12 @@ def chunk_file(
         repo_url: Full repository URL.
         branch: Git branch name.
         commit_sha: Commit SHA for this version of the file.
-        gitlab_base_url: *Deprecated* — use *scm_base_url* instead.
         scm_provider: SCM platform (``"gitlab"`` or ``"github"``).
         scm_base_url: Base web URL for building permalinks.
 
     Returns:
         List of Chunk objects ready for embedding and Qdrant upsert.
     """
-    # Backwards-compat: honour legacy gitlab_base_url if scm_base_url not set
-    effective_base_url = scm_base_url or gitlab_base_url
     chunks: list[Chunk] = []
     now = datetime.now(timezone.utc).isoformat()
 
@@ -173,7 +169,7 @@ def chunk_file(
                 commit_sha=commit_sha,
                 now=now,
                 scm_provider=scm_provider,
-                scm_base_url=effective_base_url,
+                scm_base_url=scm_base_url,
             )
             chunks.append(chunk)
         return chunks
@@ -204,7 +200,7 @@ def chunk_file(
             commit_sha=commit_sha,
             now=now,
             scm_provider=scm_provider,
-            scm_base_url=effective_base_url,
+            scm_base_url=scm_base_url,
         )
         chunks.append(chunk)
 

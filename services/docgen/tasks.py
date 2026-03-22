@@ -73,6 +73,7 @@ celery_app.conf.update(
         "services.docgen.tasks.index_repository": {"queue": "indexing"},
         "services.docgen.tasks.index_changed_files": {"queue": "indexing"},
         "services.docgen.tasks.index_static_docs": {"queue": "indexing"},
+        "services.docgen.tasks.index_mr_context": {"queue": "indexing"},
         "services.docgen.tasks.regenerate_docs": {"queue": "docgen"},
         "services.docgen.tasks.generate_wiki": {"queue": "docgen"},
         "services.docgen.tasks.generate_wiki_incremental": {"queue": "docgen"},
@@ -602,6 +603,202 @@ def regenerate_docs(
     stats["completed_at"] = datetime.now(timezone.utc).isoformat()
     task_log.info(
         f"[regenerate_docs] Done: generated {stats['docs_generated']} docs"
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Task: Index MR / PR / Issue Context
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    name="services.docgen.tasks.index_mr_context",
+)
+def index_mr_context(
+    self,
+    project_id: str,
+    context_type: str,
+    context_id: int | str,
+    title: str,
+    body: str,
+    comments: list[dict[str, str]] | None = None,
+    state: str = "",
+    author: str = "",
+    url: str = "",
+) -> dict[str, Any]:
+    """
+    Index a Merge Request, Pull Request, or Issue into the app_docs collection.
+
+    Captures the description and discussion thread so the agent can reference
+    MR/PR rationale and issue context when answering developer questions.
+
+    Args:
+        project_id: SCM project identifier.
+        context_type: One of "merge_request", "pull_request", or "issue".
+        context_id: MR/PR/Issue number (iid for GitLab, number for GitHub).
+        title: Title of the MR/PR/Issue.
+        body: Description / body text.
+        comments: Optional list of comments, each ``{"author": ..., "body": ...}``.
+        state: Current state (opened, closed, merged, etc.).
+        author: Author username.
+        url: Web URL for attribution.
+
+    Returns:
+        Dict with indexing statistics.
+    """
+    from services.indexing.embedder import get_embedder
+    from services.indexing.qdrant_store import get_store
+    from services.parsing.chunker import Chunk, make_doc_chunk_id, make_content_hash
+
+    cfg = CelerySettings()
+    embedder = get_embedder()
+    store = get_store()
+
+    task_log.info(
+        f"[index_mr_context] project={project_id}, type={context_type}, "
+        f"id={context_id}, title={title[:60]}"
+    )
+
+    stats = {
+        "project_id": project_id,
+        "context_type": context_type,
+        "context_id": context_id,
+        "chunks_indexed": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        chunks: list[Chunk] = []
+
+        # --- Build main content from title + body --------------------------
+        label = context_type.replace("_", " ").title()
+        main_content = f"# {label} #{context_id}: {title}\n\n"
+        if state:
+            main_content += f"**State:** {state}\n"
+        if author:
+            main_content += f"**Author:** {author}\n"
+        main_content += "\n"
+        main_content += body or "(no description)"
+
+        content_hash = make_content_hash(main_content)
+        chunk_id = make_doc_chunk_id(
+            source_label=context_type,
+            file_path=f"{context_type}/{context_id}",
+            chunk_index=0,
+            content=main_content,
+        )
+
+        chunks.append(Chunk(
+            id=chunk_id,
+            content=main_content,
+            metadata={
+                "source_label": context_type,
+                "source_collection": "app_docs",
+                "trust_level": "documentation",
+                "heading": f"{label} #{context_id}: {title}",
+                "section_path": f"{context_type}/{context_id}",
+                "project_id": project_id,
+                "content_hash": content_hash,
+                "last_indexed_at": now,
+                "context_type": context_type,
+                "context_id": str(context_id),
+                "state": state,
+                "author": author,
+                "url": url,
+                # Satisfy chunk metadata validation
+                "file_path": f"{context_type}/{context_id}",
+                "language": "markdown",
+                "symbol_name": f"{context_type}_{context_id}",
+                "symbol_type": context_type,
+                "start_line": 1,
+                "end_line": main_content.count("\n") + 1,
+            },
+        ))
+
+        # --- Build chunks for comments if provided -------------------------
+        for idx, comment in enumerate(comments or []):
+            comment_body = comment.get("body", "").strip()
+            if not comment_body or len(comment_body) < 10:
+                continue
+
+            comment_author = comment.get("author", "unknown")
+            comment_content = (
+                f"## Comment by {comment_author} on {label} #{context_id}\n\n"
+                f"{comment_body}"
+            )
+
+            c_hash = make_content_hash(comment_content)
+            c_id = make_doc_chunk_id(
+                source_label=context_type,
+                file_path=f"{context_type}/{context_id}/comment",
+                chunk_index=idx + 1,
+                content=comment_content,
+            )
+
+            chunks.append(Chunk(
+                id=c_id,
+                content=comment_content,
+                metadata={
+                    "source_label": f"{context_type}_comment",
+                    "source_collection": "app_docs",
+                    "trust_level": "documentation",
+                    "heading": f"Comment on {label} #{context_id}",
+                    "section_path": f"{context_type}/{context_id}/comments",
+                    "project_id": project_id,
+                    "content_hash": c_hash,
+                    "last_indexed_at": now,
+                    "context_type": f"{context_type}_comment",
+                    "context_id": str(context_id),
+                    "author": comment_author,
+                    "url": url,
+                    "file_path": f"{context_type}/{context_id}/comment_{idx}",
+                    "language": "markdown",
+                    "symbol_name": f"{context_type}_{context_id}_comment_{idx}",
+                    "symbol_type": "comment",
+                    "start_line": 1,
+                    "end_line": comment_content.count("\n") + 1,
+                },
+            ))
+
+        if not chunks:
+            task_log.info("[index_mr_context] No indexable content, skipping")
+            return stats
+
+        # --- Embed and upsert ----------------------------------------------
+        texts = [c.content for c in chunks]
+        hashes = [c.metadata.get("content_hash", "") for c in chunks]
+
+        vectors = embedder.embed_texts(
+            texts=texts,
+            content_hashes=hashes,
+            use_query_prefix=False,
+        )
+
+        store.upsert_chunks(
+            collection=cfg.qdrant_collection_app_docs,
+            chunks=chunks,
+            vectors=vectors,
+        )
+
+        stats["chunks_indexed"] = len(chunks)
+
+    except Exception as exc:
+        task_log.error(f"[index_mr_context] Error: {exc}")
+        try:
+            raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1))
+        except self.MaxRetriesExceededError:
+            task_log.error("[index_mr_context] Max retries exceeded")
+            raise
+
+    stats["completed_at"] = datetime.now(timezone.utc).isoformat()
+    task_log.info(
+        f"[index_mr_context] Done: {stats['chunks_indexed']} chunks indexed "
+        f"for {context_type} #{context_id}"
     )
     return stats
 

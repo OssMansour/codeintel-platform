@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -62,6 +63,39 @@ structlog.configure(
 )
 
 # ---------------------------------------------------------------------------
+# Lifespan — initialise singletons at startup (avoids race conditions and
+# cold-start latency on first user request)
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Warm up all heavy singletons before the server accepts traffic."""
+    from services.agent.reranker import get_reranker
+    from services.indexing.embedder import get_embedder
+
+    log.info("lifespan_startup", msg="Initialising singletons…")
+
+    # Qdrant store (lightweight — just a TCP connection)
+    app.state.store = get_store()
+
+    # Embedder — loads the sentence-transformers model from disk/cache
+    app.state.embedder = get_embedder()
+
+    # Cross-encoder reranker — loads ms-marco-MiniLM-L6-v2
+    app.state.reranker = get_reranker()
+
+    # LangGraph agent — builds the state graph and initialises the LLM
+    agent = get_agent()
+    agent._build_graph()
+    app.state.agent = agent
+
+    log.info("lifespan_startup_complete", msg="All singletons ready")
+    yield
+    log.info("lifespan_shutdown")
+
+
+# ---------------------------------------------------------------------------
 # FastAPI App
 # ---------------------------------------------------------------------------
 
@@ -69,6 +103,7 @@ app = FastAPI(
     title="CodeIntel Agent API",
     description="AI code intelligence agent with multi-source RAG and hierarchical localization.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
