@@ -34,6 +34,7 @@ class ToolSettings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 _settings = ToolSettings()
@@ -83,6 +84,10 @@ def _format_result(hit: dict[str, Any]) -> dict[str, Any]:
     """
     meta = hit.get("metadata", {})
     permalink = _get_permalink(meta)
+    # Truncate content to 500 chars to prevent context overflow in the LLM
+    content = hit.get("content", meta.get("content", ""))
+    if len(content) > 500:
+        content = content[:500] + "…"
     return {
         "chunk_id": hit.get("chunk_id", ""),
         "score": round(hit.get("score", 0.0), 4),
@@ -106,8 +111,8 @@ def _format_result(hit: dict[str, Any]) -> dict[str, Any]:
         "section_path": meta.get("section_path", ""),
         "heading": meta.get("heading", ""),
         "source_label": meta.get("source_label", ""),
-        # Content
-        "content": hit.get("content", meta.get("content", "")),
+        # Content — truncated to 500 chars to prevent LLM context overflow
+        "content": content,
         # Incident-specific fields
         "severity": meta.get("severity", ""),
         "incident_date": meta.get("incident_date", ""),
@@ -343,7 +348,7 @@ def keyword_search(
     top_k: int = 20,
 ) -> list[dict[str, Any]]:
     """
-    BM25 keyword search for exact identifier names, error messages, or specific strings.
+    Hybrid (dense + BM25 text) search biased toward exact identifier matching.
 
     Use this tool when you need to find:
     - Exact function names, class names, or variable names
@@ -351,6 +356,8 @@ def keyword_search(
     - Exact import statements or module references
     - Cases where you know the exact name and need to find all references
 
+    Internally this uses the same hybrid search as search_code but the query
+    is constructed from exact terms, making BM25 the dominant signal.
     This complements semantic search (search_code) for cases where exact
     token matching is more important than semantic similarity.
 
@@ -449,8 +456,8 @@ def traverse_graph(
             "callers" — find functions that call this function
             "callees" — find functions called by this function
             "both" — find both callers and callees (default)
-        depth: How many hops to traverse (1-3, default 2).
-            Higher values may be slow for highly connected functions.
+        depth: Accepted for API compatibility but currently always traverses 1 hop.
+            Multi-hop traversal is not yet implemented (GAP-06).
         project_id: Optional project ID to scope traversal.
 
     Returns:
@@ -458,10 +465,11 @@ def traverse_graph(
         - "node_id": the queried function
         - "callers": list of functions that call this function (with file info)
         - "callees": list of functions called by this function (with file info)
-        - "depth": actual depth traversed
+        - "depth": depth accepted (always 1 in current implementation)
     """
     store = _get_store()
     embedder = _get_embedder()
+    depth = 1  # Multi-hop not yet implemented; clamp to avoid misleading the caller
 
     # Parse node_id to extract file_path and symbol name
     file_path_hint = None
@@ -671,6 +679,11 @@ def retrieve_entity(
 
     meta = best_match.get("metadata", {})
     content = best_match.get("content", meta.get("content", ""))
+    # Truncate to 2000 chars — intentionally larger than search_code's 500-char
+    # limit since retrieve_entity is an explicit full-source retrieval, but still
+    # bounded to prevent LLM context overflow for very large functions (GAP-07).
+    if len(content) > 2000:
+        content = content[:2000] + "…"
 
     result = {
         "found": True,

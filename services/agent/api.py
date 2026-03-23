@@ -46,11 +46,12 @@ class APISettings(BaseSettings):
     """Agent API settings."""
 
     log_level: str = "info"
-    secret_key: str = "change-me-in-production"
+    repo_clone_base: str = "/data/repos"  # Used to validate repo_path in wiki regen
 
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 settings = APISettings()
@@ -87,7 +88,7 @@ async def lifespan(app: FastAPI):
 
     # LangGraph agent — builds the state graph and initialises the LLM
     agent = get_agent()
-    agent._build_graph()
+    agent._graph = agent._build_graph()
     app.state.agent = agent
 
     log.info("lifespan_startup_complete", msg="All singletons ready")
@@ -102,9 +103,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="CodeIntel Agent API",
     description="AI code intelligence agent with multi-source RAG and hierarchical localization.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
+
+# Semaphore to cap concurrent agent runs and protect CPU resources.
+# Set to match the Gunicorn worker count (default 2).
+_agent_semaphore = asyncio.Semaphore(int(os.environ.get("AGENT_MAX_CONCURRENT", "2")))
 
 app.add_middleware(
     CORSMiddleware,
@@ -251,7 +256,7 @@ async def _stream_agent_response(
 
     try:
         # Run in thread pool since the agent is synchronous
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         agent_resp = await loop.run_in_executor(
             None,
             lambda: agent.query(question=query, project_id=project_id, thread_id=thread_id),
@@ -363,20 +368,21 @@ async def agent_query(request: QueryRequest) -> Any:
     # Non-streaming: run agent and return full response
     agent = get_agent()
     try:
-        loop = asyncio.get_event_loop()
-        agent_resp = await loop.run_in_executor(
-            None,
-            lambda: agent.query(
-                question=request.query,
-                project_id=request.project_id,
-                thread_id=request.thread_id,
-            ),
-        )
+        async with _agent_semaphore:
+            loop = asyncio.get_running_loop()
+            agent_resp = await loop.run_in_executor(
+                None,
+                lambda: agent.query(
+                    question=request.query,
+                    project_id=request.project_id,
+                    thread_id=request.thread_id,
+                ),
+            )
     except Exception as exc:
         log.error("agent_query_failed", error=str(exc), query=request.query[:80])
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Agent query failed: {str(exc)}",
+            detail="Query failed. Please try again.",
         )
 
     return _format_response(agent_resp)
@@ -414,19 +420,20 @@ async def agent_localize(request: LocalizeRequest) -> LocalizeResponse:
 
     agent = get_agent()
     try:
-        loop = asyncio.get_event_loop()
-        agent_resp = await loop.run_in_executor(
-            None,
-            lambda: agent.query(
-                question=localize_query,
-                project_id=request.project_id,
-            ),
-        )
+        async with _agent_semaphore:
+            loop = asyncio.get_running_loop()
+            agent_resp = await loop.run_in_executor(
+                None,
+                lambda: agent.query(
+                    question=localize_query,
+                    project_id=request.project_id,
+                ),
+            )
     except Exception as exc:
         log.error("agent_localize_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Localization failed: {str(exc)}",
+            detail="Localization failed. Please try again.",
         )
 
     # Extract the primary localization from sources
@@ -569,6 +576,23 @@ class WikiRegenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _safe_project_dir(project_id: str) -> str:
+    """
+    Resolve a safe wiki directory path for the given project_id.
+
+    Sanitises project_id by using only the final path component so that
+    values like ``../../etc`` cannot escape the wiki base directory.
+    Raises HTTPException 400 if project_id is empty after sanitisation.
+    """
+    safe_id = Path(project_id).name
+    if not safe_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid project_id",
+        )
+    return os.path.join(_get_wiki_base(), safe_id)
+
+
 @app.get(
     "/wiki/{project_id}/tree",
     response_model=WikiTreeResponse,
@@ -580,7 +604,7 @@ async def wiki_tree(project_id: str) -> WikiTreeResponse:
 
     Reads the module_tree.json from the wiki docs directory.
     """
-    wiki_dir = os.path.join(_get_wiki_base(), project_id)
+    wiki_dir = _safe_project_dir(project_id)
     tree_path = os.path.join(wiki_dir, "module_tree.json")
 
     if not os.path.exists(tree_path):
@@ -628,7 +652,7 @@ async def wiki_tree(project_id: str) -> WikiTreeResponse:
 )
 async def wiki_overview(project_id: str) -> WikiOverviewResponse:
     """Return the repository overview document."""
-    wiki_dir = os.path.join(_get_wiki_base(), project_id)
+    wiki_dir = _safe_project_dir(project_id)
     overview_path = os.path.join(wiki_dir, "overview.md")
 
     if not os.path.exists(overview_path):
@@ -663,7 +687,7 @@ async def wiki_overview(project_id: str) -> WikiOverviewResponse:
 )
 async def wiki_module(project_id: str, module_name: str) -> WikiModuleResponse:
     """Return the documentation for a specific module."""
-    wiki_dir = os.path.join(_get_wiki_base(), project_id)
+    wiki_dir = _safe_project_dir(project_id)
     # Sanitise module name to prevent path traversal
     safe_name = Path(module_name).name
     doc_path = os.path.join(wiki_dir, f"{safe_name}.md")
@@ -688,7 +712,7 @@ async def wiki_module(project_id: str, module_name: str) -> WikiModuleResponse:
 )
 async def wiki_module_list(project_id: str) -> list[str]:
     """Return a flat list of all module names with docs."""
-    wiki_dir = os.path.join(_get_wiki_base(), project_id)
+    wiki_dir = _safe_project_dir(project_id)
     if not os.path.isdir(wiki_dir):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -719,7 +743,7 @@ async def wiki_search(project_id: str, q: str = "") -> WikiSearchResponse:
             detail="Query parameter 'q' must be at least 2 characters",
         )
 
-    wiki_dir = os.path.join(_get_wiki_base(), project_id)
+    wiki_dir = _safe_project_dir(project_id)
     if not os.path.isdir(wiki_dir):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -780,6 +804,20 @@ async def wiki_regenerate(request: WikiRegenRequest) -> WikiRegenResponse:
     """
     from services.docgen.tasks import generate_wiki, generate_wiki_incremental
 
+    # Validate repo_path is under the configured clone base (GAP-03)
+    repo_clone_base = os.path.realpath(settings.repo_clone_base)
+    requested_path = os.path.realpath(request.repo_path)
+    if not requested_path.startswith(repo_clone_base + os.sep) and requested_path != repo_clone_base:
+        log.warning(
+            "wiki_regenerate_invalid_repo_path",
+            repo_path=request.repo_path,
+            repo_clone_base=repo_clone_base,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="repo_path must be within the configured repository clone base directory",
+        )
+
     try:
         if request.incremental and request.changed_files:
             task = generate_wiki_incremental.apply_async(
@@ -805,7 +843,7 @@ async def wiki_regenerate(request: WikiRegenRequest) -> WikiRegenResponse:
         log.error("wiki_regenerate_dispatch_failed", error=str(exc))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to dispatch wiki generation: {str(exc)}",
+            detail="Failed to dispatch wiki generation. Please try again.",
         )
 
     return WikiRegenResponse(task_id=task.id, status="queued")

@@ -5,7 +5,7 @@ Manages all 3 Qdrant collections with hybrid dense+BM25 search.
 
 from __future__ import annotations
 
-import time
+import uuid
 from typing import Any
 
 import structlog
@@ -35,6 +35,7 @@ class QdrantSettings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 # ---------------------------------------------------------------------------
@@ -121,17 +122,15 @@ class QdrantStore:
             self._log.info("collection_already_exists", collection=name)
             return
 
+        # Dense-only: hybrid search uses Qdrant payload TEXT index (MatchText) for
+        # lexical matching — the sparse vector slot is not needed and would waste
+        # memory since upsert_chunks only writes dense vectors (GAP-08).
         self._client.create_collection(
             collection_name=name,
-            vectors_config=qmodels.VectorsConfig(
+            vectors_config=qmodels.VectorParams(
                 size=VECTOR_SIZE,
                 distance=DISTANCE,
             ),
-            sparse_vectors_config={
-                SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(
-                    index=qmodels.SparseIndexParams(on_disk=False)
-                )
-            },
         )
 
         # Create payload indices for efficient filtering
@@ -156,6 +155,19 @@ class QdrantStore:
                 field_schema=schema_type,
             )
 
+        # Full-text index on content enables BM25 keyword matching in hybrid_search
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="content",
+            field_schema=qmodels.TextIndexParams(
+                type=qmodels.TextIndexType.TEXT,
+                tokenizer=qmodels.TokenizerType.WORD,
+                min_token_len=2,
+                max_token_len=40,
+                lowercase=True,
+            ),
+        )
+
         self._log.info("collection_created", collection=name)
 
     def _create_app_docs_collection(self) -> None:
@@ -167,15 +179,10 @@ class QdrantStore:
 
         self._client.create_collection(
             collection_name=name,
-            vectors_config=qmodels.VectorsConfig(
+            vectors_config=qmodels.VectorParams(
                 size=VECTOR_SIZE,
                 distance=DISTANCE,
             ),
-            sparse_vectors_config={
-                SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(
-                    index=qmodels.SparseIndexParams(on_disk=False)
-                )
-            },
         )
 
         indices = [
@@ -185,6 +192,7 @@ class QdrantStore:
             ("project_id", qmodels.PayloadSchemaType.KEYWORD),
             ("symbol_name", qmodels.PayloadSchemaType.KEYWORD),
             ("symbol_type", qmodels.PayloadSchemaType.KEYWORD),
+            ("section_path", qmodels.PayloadSchemaType.KEYWORD),  # GAP-11: index for search_app_docs filter
             ("heading", qmodels.PayloadSchemaType.KEYWORD),
             ("last_indexed_at", qmodels.PayloadSchemaType.DATETIME),
         ]
@@ -195,6 +203,18 @@ class QdrantStore:
                 field_name=field_name,
                 field_schema=schema_type,
             )
+
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="content",
+            field_schema=qmodels.TextIndexParams(
+                type=qmodels.TextIndexType.TEXT,
+                tokenizer=qmodels.TokenizerType.WORD,
+                min_token_len=2,
+                max_token_len=40,
+                lowercase=True,
+            ),
+        )
 
         self._log.info("collection_created", collection=name)
 
@@ -207,15 +227,10 @@ class QdrantStore:
 
         self._client.create_collection(
             collection_name=name,
-            vectors_config=qmodels.VectorsConfig(
+            vectors_config=qmodels.VectorParams(
                 size=VECTOR_SIZE,
                 distance=DISTANCE,
             ),
-            sparse_vectors_config={
-                SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(
-                    index=qmodels.SparseIndexParams(on_disk=False)
-                )
-            },
         )
 
         indices = [
@@ -233,6 +248,18 @@ class QdrantStore:
                 field_name=field_name,
                 field_schema=schema_type,
             )
+
+        self._client.create_payload_index(
+            collection_name=name,
+            field_name="content",
+            field_schema=qmodels.TextIndexParams(
+                type=qmodels.TextIndexType.TEXT,
+                tokenizer=qmodels.TokenizerType.WORD,
+                min_token_len=2,
+                max_token_len=40,
+                lowercase=True,
+            ),
+        )
 
         self._log.info("collection_created", collection=name)
 
@@ -278,9 +305,12 @@ class QdrantStore:
 
         points: list[qmodels.PointStruct] = []
         for chunk, vector in zip(chunks, vectors):
+            # Qdrant requires UUID or unsigned int as point ID.
+            # Convert our 64-char SHA-256 hex to a valid UUID (use first 32 hex chars).
+            point_id = str(uuid.UUID(chunk.id[:32]))
             points.append(
                 qmodels.PointStruct(
-                    id=chunk.id,
+                    id=point_id,
                     vector=vector,
                     payload=chunk.metadata,
                 )
@@ -348,8 +378,11 @@ class QdrantStore:
                 collection=collection,
                 file_path=file_path,
                 project_id=project_id,
+                status=str(result.status),
             )
-            return getattr(result, "deleted_count", 0)
+            # Qdrant UpdateResult has no deleted_count; return 1 on success, 0 otherwise.
+            from qdrant_client.http.models import UpdateStatus
+            return 1 if result.status == UpdateStatus.COMPLETED else 0
         except Exception as exc:
             self._log.error(
                 "delete_by_file_failed",
@@ -418,23 +451,72 @@ class QdrantStore:
         qdrant_filter = self._build_filter(filters) if filters else None
 
         try:
-            # Dense vector search
+            # 1. Dense vector search — retrieve 2× candidates for RRF fusion
             dense_results = self._client.search(
                 collection_name=collection,
                 query_vector=query_vector,
                 query_filter=qdrant_filter,
-                limit=top_k,
+                limit=top_k * 2,
                 with_payload=True,
                 with_vectors=False,
             )
 
-            # Combine results (dense only for now; BM25 sparse available via query API)
+            # 2. Full-text keyword search — uses payload MatchText on content field.
+            #    Requires a TEXT index on "content" (created in setup_collections).
+            #    Gracefully skipped if the index does not exist yet.
+            text_results = []
+            if query_text.strip():
+                try:
+                    text_condition = qmodels.FieldCondition(
+                        key="content",
+                        match=qmodels.MatchText(text=query_text),
+                    )
+                    if qdrant_filter and qdrant_filter.must:
+                        text_filter = qmodels.Filter(
+                            must=list(qdrant_filter.must) + [text_condition]
+                        )
+                    else:
+                        text_filter = qmodels.Filter(must=[text_condition])
+
+                    text_scroll, _ = self._client.scroll(
+                        collection_name=collection,
+                        scroll_filter=text_filter,
+                        limit=top_k,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                    text_results = text_scroll
+                except Exception as text_exc:
+                    self._log.debug(
+                        "text_search_skipped",
+                        collection=collection,
+                        reason=str(text_exc),
+                    )
+
+            # 3. Reciprocal Rank Fusion (RRF) — k=60 is the standard constant
+            rrf_k = 60
+            rrf_scores: dict[str, float] = {}
+            payloads: dict[str, dict] = {}
+
+            for rank, hit in enumerate(dense_results, start=1):
+                cid = str(hit.id)
+                rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+                payloads[cid] = hit.payload or {}
+
+            for rank, hit in enumerate(text_results, start=1):
+                cid = str(hit.id)
+                rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+                if cid not in payloads:
+                    payloads[cid] = hit.payload or {}
+
+            sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)[:top_k]
+
             results = []
-            for hit in dense_results:
-                payload = hit.payload or {}
+            for cid in sorted_ids:
+                payload = payloads[cid]
                 results.append({
-                    "chunk_id": str(hit.id),
-                    "score": hit.score,
+                    "chunk_id": cid,
+                    "score": rrf_scores[cid],
                     "content": payload.get("content", ""),
                     "metadata": payload,
                     "collection": collection,
@@ -641,10 +723,13 @@ class QdrantStore:
         Returns:
             Point payload dict or None if not found.
         """
+        # upsert_chunks stores points under UUID-format IDs (first 32 hex chars of
+        # the SHA-256 chunk_id).  Apply the same conversion here so lookups match.
         try:
+            lookup_id = str(uuid.UUID(chunk_id[:32])) if len(chunk_id) >= 32 else chunk_id
             results = self._client.retrieve(
                 collection_name=collection,
-                ids=[chunk_id],
+                ids=[lookup_id],
                 with_payload=True,
             )
             if results:
@@ -677,24 +762,34 @@ class QdrantStore:
         offset = None
 
         while True:
-            batch, next_offset = self._client.scroll(
-                collection_name=collection,
-                scroll_filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="file_path",
-                            match=qmodels.MatchValue(value=file_path),
-                        ),
-                        qmodels.FieldCondition(
-                            key="project_id",
-                            match=qmodels.MatchValue(value=project_id),
-                        ),
-                    ]
-                ),
-                with_payload=True,
-                limit=100,
-                offset=offset,
-            )
+            try:
+                batch, next_offset = self._client.scroll(
+                    collection_name=collection,
+                    scroll_filter=qmodels.Filter(
+                        must=[
+                            qmodels.FieldCondition(
+                                key="file_path",
+                                match=qmodels.MatchValue(value=file_path),
+                            ),
+                            qmodels.FieldCondition(
+                                key="project_id",
+                                match=qmodels.MatchValue(value=project_id),
+                            ),
+                        ]
+                    ),
+                    with_payload=True,
+                    limit=100,
+                    offset=offset,
+                )
+            except Exception as exc:
+                self._log.error(
+                    "scroll_by_file_failed",
+                    collection=collection,
+                    file_path=file_path,
+                    project_id=project_id,
+                    error=str(exc),
+                )
+                raise
             results.extend([p.payload for p in batch if p.payload])
             if next_offset is None:
                 break

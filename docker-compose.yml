@@ -52,7 +52,7 @@ services:
     environment:
       QDRANT__LOG_LEVEL: INFO
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/localhost/6333'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -69,7 +69,10 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    # AOF persistence keeps task state across restarts.
+    # volatile-lru evicts only keys with a TTL, preserving Celery result keys
+    # that have no expiry set (allkeys-lru would silently drop them under load).
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy volatile-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -93,7 +96,7 @@ services:
       OLLAMA_MAX_LOADED_MODELS: 1
       # CPU-only mode; no GPU device
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/localhost/11434'"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -166,7 +169,7 @@ services:
       --worker-class uvicorn.workers.UvicornWorker
       --workers 2
       --bind ${HOST:-0.0.0.0}:${AGENT_PORT:-8001}
-      --timeout 300
+      --timeout 600
       --log-level ${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]

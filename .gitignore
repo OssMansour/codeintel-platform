@@ -42,3 +42,9 @@ desktop.ini
 
 # Benchmark results
 benchmarks/results/
+
+# Development Docker override (auto-loaded by Compose — never commit to production)
+docker-compose.override.yml
+
+# Claude Code session files
+.claude/

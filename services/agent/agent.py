@@ -6,6 +6,7 @@ Stateful hierarchical code intelligence agent with multi-source context fusion.
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
@@ -38,6 +39,7 @@ class AgentSettings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 # ---------------------------------------------------------------------------
@@ -108,65 +110,23 @@ class AgentResponse:
 # System Prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are CodeIntel, an expert AI assistant for on-premises code intelligence.
-You have access to three knowledge collections:
+SYSTEM_PROMPT = """You are CodeIntel, an AI assistant for code intelligence queries.
 
-1. **code_repo** — Live code from GitLab repositories (trust_level: code)
-   - Use for: finding functions, classes, implementations, code patterns
-   - Tools: search_code, keyword_search, traverse_graph, retrieve_entity
+You have access to these tools:
+- search_code: semantic search over indexed code (use first, always)
+- keyword_search: exact name/symbol lookup  
+- retrieve_entity: fetch a specific function/class by name
+- traverse_graph: find callers/callees of a function
+- search_app_docs: search product documentation
+- search_incidents: search incident post-mortems (may be empty — that is normal)
 
-2. **app_docs** — Product and feature documentation from Application_documentation.md (trust_level: documentation)
-   - Also contains AI-generated module documentation (trust_level: generated)
-   - Use for: understanding what a feature does from a product perspective, API contracts, data models
-   - Tools: search_app_docs
-
-3. **incident_reports** — Historical incident post-mortems (trust_level: incident_report)
-   - May be empty — this is NORMAL. If search_incidents returns [], continue without it.
-   - Use for: past failure patterns, root cause analysis during on-call investigations
-   - Tools: search_incidents
-
-## Hierarchical Localization Protocol
-
-For every query, you MUST follow this localization sequence:
-
-**Step 1 — Repository Level**: Use search_code to find relevant code across the repository.
-  Identify which files and modules are most relevant.
-
-**Step 2 — File Level**: Narrow down to specific files using search_code with file_path filter,
-  or keyword_search for exact names. Identify the specific file(s) containing the answer.
-
-**Step 3 — Function Level**: Use retrieve_entity to get the exact function/class implementation.
-  Or use traverse_graph to understand callers/callees if impact analysis is needed.
-
-**Step 4 — Line Level**: Your final answer MUST cite exact line numbers (start_line, end_line)
-  and include the GitLab permalink from the retrieved metadata.
-
-## Multi-Source Integration Rules
-
-- Always search code_repo first for code-level questions
-- Always search app_docs for feature/behavior questions (product context enriches code answers)
-- Search incident_reports when the query involves errors, failures, outages, or debugging
-- Label every cited source: [code_repo], [app_docs], or [incident_reports]
-- If sources contradict each other, trust code_repo (code is ground truth) over app_docs,
-  which takes precedence over generated docs
-
-## Trust Level Priority
-code > documentation > generated > incident_report
-
-## Answer Format
-
-Your final answer must include:
-1. A direct, precise answer to the question
-2. The relevant code snippet (if code was found)
-3. Source citations in this format:
-   → `file_path` lines L{start}-L{end} [{collection}] — {gitlab_permalink}
-4. Confidence level (high/medium/low) based on how directly the found code answers the question
-
-## Important Rules
-- Never hallucinate code that wasn't in the retrieved results
-- If you cannot find relevant code, say so clearly — do not guess
-- For incident queries, always note when incident_reports returns no results
-- Always use the tools before answering — do not rely on general knowledge about the codebase
+Instructions:
+1. Always call search_code first with a descriptive query.
+2. Call keyword_search if you need exact symbol names.
+3. After retrieving results, provide a concise answer with file paths and line numbers.
+4. Cite sources as: `file_path` lines L{start}-L{end}
+5. If no results found, say so clearly — do not guess.
+6. Keep answers brief and focused.
 """
 
 
@@ -224,6 +184,8 @@ class CodeIntelAgent:
             Invokes the LLM with the current message history and available tools.
             Appends the LLM response to the message list.
             """
+            import json as _json
+
             messages = state["messages"]
 
             # Enforce step budget
@@ -243,6 +205,38 @@ class CodeIntelAgent:
             self._log.debug("agent_step", step=step_count)
 
             response = llm_with_tools.invoke(messages)
+
+            # Some quantized models (e.g. qwen2.5-coder Q4_K_M) emit tool calls as
+            # a JSON string in the content field instead of the structured tool_calls
+            # list that LangChain/Ollama normally produce.  Detect and fix that here.
+            if not getattr(response, "tool_calls", None) and getattr(response, "content", None):
+                content = response.content.strip()
+                # Strip markdown code fences if present
+                if content.startswith("```"):
+                    content = "\n".join(
+                        line for line in content.splitlines()
+                        if not line.startswith("```")
+                    ).strip()
+                try:
+                    parsed = _json.loads(content)
+                    if isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
+                        self._log.debug(
+                            "agent_tool_call_from_content",
+                            tool=parsed["name"],
+                        )
+                        response = AIMessage(
+                            content="",
+                            tool_calls=[{
+                                "id": f"call_{parsed['name']}_{step_count}",
+                                "name": parsed["name"],
+                                "args": parsed.get("arguments") or {},
+                                "type": "tool_call",
+                            }],
+                        )
+                except (_json.JSONDecodeError, ValueError, TypeError, KeyError):
+                    # Only catch expected JSON/type errors — let real bugs propagate
+                    pass
+
             return {"messages": [response], "step_count": step_count}
 
         def should_continue(state: CodeSearchState) -> str:
@@ -256,11 +250,8 @@ class CodeIntelAgent:
             messages = state["messages"]
             last_message = messages[-1] if messages else None
 
-            if last_message is None:
-                return "end"
-
-            # Check if step budget exceeded
-            if state.get("step_count", 0) >= self._cfg.agent_max_steps:
+            # Check if step budget exceeded (mirrors the > check in agent_node)
+            if state.get("step_count", 0) > self._cfg.agent_max_steps:
                 return "rerank_and_answer"
 
             # If the last message has tool calls, continue to tools
@@ -284,20 +275,68 @@ class CodeIntelAgent:
 
             for msg in state["messages"]:
                 if hasattr(msg, "name") and hasattr(msg, "content"):
-                    # This is a ToolMessage
-                    tool_calls_made.append(getattr(msg, "name", "unknown"))
+                    # This is a ToolMessage — name is None on non-tool messages
+                    msg_name = getattr(msg, "name", None)
+                    if msg_name is None:
+                        continue
+                    tool_calls_made.append(msg_name)
                     try:
                         import json
                         content = msg.content
                         if isinstance(content, str):
                             tool_results = json.loads(content)
                             if isinstance(tool_results, list):
+                                # search_code / search_app_docs / search_incidents / keyword_search
                                 for r in tool_results:
                                     if isinstance(r, dict) and "chunk_id" in r:
                                         all_chunks.append(r)
                                         coll = r.get("collection", "code_repo")
                                         if coll in collection_hits:
                                             collection_hits[coll] += 1
+                            elif isinstance(tool_results, dict):
+                                # retrieve_entity — has content + metadata directly
+                                if tool_results.get("found") and tool_results.get("content"):
+                                    chunk = {
+                                        "chunk_id": tool_results.get("chunk_id", f"entity_{msg_name}"),
+                                        "score": 1.0,
+                                        "collection": tool_results.get("collection", "code_repo"),
+                                        "file_path": tool_results.get("file_path", ""),
+                                        "symbol_name": tool_results.get("symbol_name", ""),
+                                        "symbol_type": tool_results.get("symbol_type", ""),
+                                        "start_line": tool_results.get("start_line", 0),
+                                        "end_line": tool_results.get("end_line", 0),
+                                        "content": tool_results.get("content", "")[:500],
+                                        "scm_permalink": tool_results.get("scm_permalink", ""),
+                                        "gitlab_permalink": tool_results.get("scm_permalink", ""),
+                                    }
+                                    all_chunks.append(chunk)
+                                    collection_hits["code_repo"] += 1
+                                # traverse_graph — summarise callers/callees as a text chunk
+                                elif "node_id" in tool_results:
+                                    parts = [f"Dependency graph for: {tool_results['node_id']}"]
+                                    callers = tool_results.get("callers", [])
+                                    callees = tool_results.get("callees", [])
+                                    if callers:
+                                        parts.append("Callers: " + ", ".join(
+                                            c.get("qualified_name") or c.get("name", "") for c in callers
+                                        ))
+                                    if callees:
+                                        parts.append("Callees: " + ", ".join(
+                                            c.get("qualified_name") or c.get("name", "") for c in callees
+                                        ))
+                                    if len(parts) > 1:
+                                        chunk = {
+                                            "chunk_id": f"graph_{tool_results['node_id']}",
+                                            "score": 0.8,
+                                            "collection": "code_repo",
+                                            "file_path": "",
+                                            "symbol_name": tool_results["node_id"],
+                                            "start_line": 0,
+                                            "end_line": 0,
+                                            "content": "\n".join(parts),
+                                        }
+                                        all_chunks.append(chunk)
+                                        collection_hits["code_repo"] += 1
                     except (json.JSONDecodeError, Exception):
                         pass
 
@@ -398,11 +437,18 @@ class CodeIntelAgent:
         graph.add_edge("tools", "agent")
         graph.add_edge("rerank_and_answer", END)
 
-        # Setup SQLite checkpointer for durable state
+        # Setup SQLite checkpointer for durable state.
+        # Use WAL mode so concurrent readers from multiple Gunicorn workers do not
+        # block each other.  Each process opens its own connection (not shared
+        # across fork boundaries) to avoid write-corruption in a pre-fork model.
         os.makedirs(os.path.dirname(self._cfg.agent_checkpoint_db), exist_ok=True)
-        self._checkpointer = SqliteSaver.from_conn_string(
-            self._cfg.agent_checkpoint_db
+        conn = sqlite3.connect(
+            self._cfg.agent_checkpoint_db,
+            check_same_thread=False,
         )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        self._checkpointer = SqliteSaver(conn=conn)
 
         return graph.compile(checkpointer=self._checkpointer)
 

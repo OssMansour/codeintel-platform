@@ -300,7 +300,11 @@ def index_repository(
             stats["errors"].append(f"{file_rel_path}: {str(exc)[:100]}")
             postfix = "(FAILED)"
 
-        progress.update(1, postfix)
+        if hasattr(progress, 'set_postfix_str'):
+            progress.set_postfix_str(postfix)
+            progress.update(1)
+        else:
+            progress.update(1, postfix)
 
     progress.close()
     return stats
