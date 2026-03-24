@@ -22,10 +22,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY services/ ./services/
 COPY scripts/ ./scripts/
+COPY benchmarks/ ./benchmarks/
+COPY tests/ ./tests/
 
 # Create data directories
-RUN mkdir -p /data/repos /data/indexes/embed_cache /data/models/embed \
-             /data/models/reranker /data/sources /data/qdrant
+RUN mkdir -p /data/repos \
+             /data/indexes/embed_cache \
+             /data/indexes/wiki \
+             /data/models/embed \
+             /data/models/reranker \
+             /data/sources \
+             /data/qdrant
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 from langchain_core.tools import tool
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 from services.indexing.embedder import get_embedder
@@ -31,10 +32,11 @@ class ToolSettings(BaseSettings):
     qdrant_collection_incidents: str = "incident_reports"
     gitlab_url: str = "https://gitlab.com"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 _settings = ToolSettings()

@@ -16,7 +16,7 @@ import structlog
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 from services.agent.agent import AgentResponse, get_agent
@@ -48,10 +48,11 @@ class APISettings(BaseSettings):
     log_level: str = "info"
     repo_clone_base: str = "/data/repos"  # Used to validate repo_path in wiki regen
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 settings = APISettings()

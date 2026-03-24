@@ -259,6 +259,11 @@ def index_repository(
 
             # Parse the file
             symbol_table = parse_file(abs_path)
+            # ⚑ Normalise: store the repo-relative path, not the OS absolute
+            # path.  Without this fix, metadata["file_path"] would be e.g.
+            # "C:\codeintel-data\repos\MyRepo\src\foo.py" and the SCM permalink
+            # would be malformed ("file://…/repo/-/blob/main/C:\codeintel-…").
+            symbol_table.file_path = file_rel_path
 
             # Chunk at symbol boundaries
             chunks = chunk_file(
@@ -271,7 +276,11 @@ def index_repository(
 
             if not chunks:
                 stats["files_processed"] += 1
-                progress.update(1, f"(empty: {Path(file_rel_path).name})")
+                if hasattr(progress, 'set_postfix_str'):
+                    progress.set_postfix_str(f"(empty: {Path(file_rel_path).name})")
+                    progress.update(1)
+                else:
+                    progress.update(1, f"(empty: {Path(file_rel_path).name})")
                 continue
 
             # Embed with caching

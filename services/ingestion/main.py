@@ -15,7 +15,7 @@ from typing import Any, Callable
 import structlog
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 from services.docgen.tasks import index_changed_files, index_mr_context, index_repository, index_static_docs
@@ -30,22 +30,23 @@ class IngestionSettings(BaseSettings):
     """Configuration for the ingestion service loaded from environment."""
 
     # GitLab settings
-    gitlab_webhook_secret: str = Field("", env="GITLAB_WEBHOOK_SECRET")
-    gitlab_project_id: str = Field("", env="GITLAB_PROJECT_ID")
+    gitlab_webhook_secret: str = Field("")
+    gitlab_project_id: str = Field("")
 
     # GitHub settings
-    github_webhook_secret: str = Field("", env="GITHUB_WEBHOOK_SECRET")
-    github_repo: str = Field("", env="GITHUB_REPO")
+    github_webhook_secret: str = Field("")
+    github_repo: str = Field("")
 
     # Common
-    scm_provider: SCMProvider = Field(SCMProvider.GITLAB, env="SCM_PROVIDER")
-    repo_clone_base: str = Field("/data/repos", env="REPO_CLONE_BASE")
-    log_level: str = Field("info", env="LOG_LEVEL")
+    scm_provider: SCMProvider = Field(SCMProvider.GITLAB)
+    repo_clone_base: str = Field("/data/repos")
+    log_level: str = Field("info")
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 settings = IngestionSettings()

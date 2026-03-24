@@ -14,6 +14,7 @@ from typing import Any
 
 import gitlab
 import structlog
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 from services.ingestion.scm_provider import (
@@ -40,10 +41,11 @@ class GitLabSettings(BaseSettings):
     gitlab_project_id: str = ""
     repo_clone_base: str = "/data/repos"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------

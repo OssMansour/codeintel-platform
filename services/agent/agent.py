@@ -16,6 +16,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 from services.agent.reranker import RankedChunk, get_reranker
@@ -36,10 +37,11 @@ class AgentSettings(BaseSettings):
     agent_rerank_top_k: int = 5
     agent_checkpoint_db: str = "/data/indexes/agent_checkpoints.db"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------

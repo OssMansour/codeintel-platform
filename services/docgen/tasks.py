@@ -15,6 +15,7 @@ import structlog
 from celery import Celery
 from celery.utils.log import get_task_logger
 from kombu import Queue
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 log = structlog.get_logger(__name__)
@@ -45,10 +46,11 @@ class CelerySettings(BaseSettings):
     def supported_languages(self) -> list[str]:
         return [lang.strip() for lang in self.parse_languages.split(",")]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------

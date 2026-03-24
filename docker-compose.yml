@@ -311,51 +311,31 @@ services:
 # =============================================================================
 # Volumes
 # =============================================================================
+# On Linux production servers, uncomment the driver_opts blocks and set
+# DEVICE_PATH_* env vars (or replace with absolute Linux paths) to use
+# bind-mount directories you control.
+# On Windows / Docker Desktop the plain named-volume form below is used.
 volumes:
   qdrant_storage:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/qdrant
 
   redis_data:
     driver: local
 
   ollama_models:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/models/ollama
 
   repos_data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/repos
 
   index_data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/indexes
 
   model_data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/models
 
   sources_data:
     driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /data/sources
 
   benchmark_data:
     driver: local

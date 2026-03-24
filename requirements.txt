@@ -36,19 +36,16 @@ einops==0.8.0
 
 # --- Tree-sitter Parsing ---
 tree-sitter==0.23.2
-# Language grammars -- install as needed:
-# tree-sitter-python
-# tree-sitter-javascript
-# tree-sitter-typescript
-# tree-sitter-go
-# tree-sitter-java
-# tree-sitter-c
-# tree-sitter-cpp
-# tree-sitter-c-sharp
-# tree-sitter-kotlin
-# tree-sitter-php
-# Or use the bundled package:
-tree-sitter-languages==1.10.2
+# Individual language grammars (versions compatible with tree-sitter 0.23.x, ABI 13-14):
+tree-sitter-python==0.21.0
+tree-sitter-javascript==0.21.4
+tree-sitter-typescript==0.21.2
+tree-sitter-go==0.21.0
+tree-sitter-java==0.21.0
+tree-sitter-c==0.21.4
+tree-sitter-cpp==0.22.3
+# NOTE: tree-sitter-languages 1.10.2 is NOT compatible with tree-sitter 0.23.x
+# tree-sitter-languages==1.10.2
 
 # --- Async Tasks ---
 celery[redis]==5.4.0

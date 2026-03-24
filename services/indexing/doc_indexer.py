@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 from services.indexing.embedder import get_embedder
@@ -35,10 +36,11 @@ class DocIndexSettings(BaseSettings):
     qdrant_collection_incidents: str = "incident_reports"
     embed_batch_size: int = 32
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------

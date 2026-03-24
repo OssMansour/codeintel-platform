@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 
@@ -51,10 +51,11 @@ class BenchmarkSettings(BaseSettings):
     max_agent_latency_s: float = 30.0
     max_retrieval_latency_ms: float = 500.0
 
-    class Config:
-        env_file = ".env"
-        env_prefix = "BENCH_"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_file=".env",
+        env_prefix="BENCH_",
+        case_sensitive=False,
+    )
 
 
 # ---------------------------------------------------------------------------

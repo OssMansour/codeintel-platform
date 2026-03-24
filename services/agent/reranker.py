@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 log = structlog.get_logger(__name__)
@@ -24,10 +25,11 @@ class RerankerSettings(BaseSettings):
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     reranker_cache_dir: str = "/data/models/reranker"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +138,7 @@ class CrossEncoderReranker:
             self._model = CrossEncoder(
                 self._model_name,
                 device="cpu",
-                cache_folder=self._cache_dir,
+                cache_dir=self._cache_dir,
             )
             self._log.info("reranker_model_loaded", model=self._model_name)
         except Exception as exc:

@@ -122,7 +122,12 @@ def _load_language(language: str) -> Any | None:
         module_name = f"tree_sitter_{language.replace('-', '_')}"
         mod = importlib.import_module(module_name)
         from tree_sitter import Language
-        return Language(mod.language())
+        # Most grammars expose .language(); typescript exposes .language_typescript()
+        if hasattr(mod, "language"):
+            return Language(mod.language())
+        lang_fn_name = f"language_{language}"
+        if hasattr(mod, lang_fn_name):
+            return Language(getattr(mod, lang_fn_name)())
     except (ImportError, AttributeError):
         pass
 
@@ -307,8 +312,12 @@ class MultiLanguageParser:
 
         try:
             from tree_sitter import Parser
-            parser = Parser()
-            parser.set_language(lang)
+            # tree-sitter 0.23+ uses Parser(language=lang); older uses set_language()
+            try:
+                parser = Parser(lang)
+            except TypeError:
+                parser = Parser()
+                parser.set_language(lang)
             self._parsers[language] = parser
             self._languages[language] = lang
             return parser
@@ -480,12 +489,13 @@ class MultiLanguageParser:
         try:
             query = lang_obj.query(query_str)
             matches = query.matches(root)
+            # Map query type name → tree-sitter capture key
+            # e.g. "classes" → "class", "functions" → "function"
+            _CAPTURE_KEY = {"classes": "class", "functions": "function", "imports": "import"}
+            main_key = _CAPTURE_KEY.get(query_type, query_type)
             results = []
             for _pattern_index, capture_dict in matches:
-                main_node = capture_dict.get(
-                    query_type[:-1] if query_type.endswith("s") else query_type,
-                    [None]
-                )
+                main_node = capture_dict.get(main_key, [None])
                 if isinstance(main_node, list):
                     main_node = main_node[0] if main_node else None
                 name_node = capture_dict.get("name", [None])

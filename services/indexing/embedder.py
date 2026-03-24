@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import structlog
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 log = structlog.get_logger(__name__)
@@ -29,10 +30,11 @@ class EmbedSettings(BaseSettings):
     embed_cache_dir: str = "/data/models/embed"
     embed_vector_cache_dir: str = "/data/indexes/embed_cache"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------

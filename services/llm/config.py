@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -50,7 +51,8 @@ class LLMConfig(BaseSettings):
     azure_api_key: str = ""
     azure_api_version: str = "2024-06-01"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )

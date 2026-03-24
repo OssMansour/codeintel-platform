@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 import structlog
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -32,10 +33,11 @@ class QdrantSettings(BaseSettings):
     qdrant_collection_app_docs: str = "app_docs"
     qdrant_collection_incidents: str = "incident_reports"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -524,18 +526,23 @@ class QdrantStore:
 
             return results
 
-        except UnexpectedResponse as exc:
-            if "Not found" in str(exc) or "doesn't exist" in str(exc):
+        except (UnexpectedResponse, ValueError) as exc:
+            err = str(exc)
+            if (
+                "Not found" in err
+                or "doesn't exist" in err
+                or "not found" in err.lower()
+            ):
                 self._log.warning(
                     "collection_not_found_returning_empty",
                     collection=collection,
-                    error=str(exc),
+                    error=err,
                 )
                 return []
             self._log.error(
                 "hybrid_search_failed",
                 collection=collection,
-                error=str(exc),
+                error=err,
             )
             raise
         except Exception as exc:
